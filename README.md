@@ -1,2 +1,12 @@
-Hello world!
-Start is here...
+# MEG-SPC
+---
+
+
+## Documentation
+---
+
+
+
+## Usage example
+---
+
