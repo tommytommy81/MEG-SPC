@@ -19,9 +19,9 @@ Steps:
 ## Requirements
 
 
-python 3.6
-Anaconda 3
-Inkscape
+* __python 3.6__
+* __Anaconda 3__
+* __Inkscape__
 
 Package | Version
 ------------ | -------------
