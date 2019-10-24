@@ -29,10 +29,13 @@ class Preprocessing:
         self.dir_tsss = directory + 'MEG_data/tsss_mc/'
         self.dir_tsss_filt_1Hz = directory + 'MEG_data/tsss_mc_1Hz/'
         self.dir_psd = directory + 'PSD/'
+        os.makedirs(self.dir_psd,exist_ok=True)
         self.dir_bdip = directory + 'VD_spikes/bdip_files/'
+        os.makedirs(self.dir_bdip,exist_ok=True)
         self.dir_spc = directory + 'Spyking_circus/'
         self.dir_art_corr = directory + 'MEG_data/tsss_mc_artefact_correction'
         self.dir_ica = directory + 'ICA/'
+        os.makedirs(self.dir_ica,exist_ok=True)
         self.case = case
         self.fif_files = Preprocessing.file_names_fif(self, self.dir_tsss)
         os.makedirs(self.dir_case + 'MEG_data/tsss_mc_artefact_correction',exist_ok=True)
@@ -398,14 +401,14 @@ class Preprocessing:
         is_max[column] = s.loc[column] == threshold
         return ['' if is_max.any() else 'background-color: yellow' for v in is_max] #'background-color: white'        
         
-    def update_cases_files(self):
+    def update_cases_files(self, first_time=False):
         """ Update information in cases_files """
         from pathlib import Path
         import pandas as pd
         import shutil
         
         if not Path('%sall_cases_files.xlsx'%self.dir_root).is_file():
-            cnames = ('Patient','folder','file','length(s)','N_manual_spikes','skipped','ICA_bad_comp_auto','ICA_bad_comp_manual','bad_annot_begin','bad_annot_duration','Manual_components')
+            cnames = ('Patient','folder','file','length(s)','N_manual_spikes','skipped','ICA_bad_comp_auto','ICA_bad_comp_manual','bad_annot_begin','bad_annot_duration','Manual_components','Time_of_the_first_sample')
             all_cases_files = pd.DataFrame(columns=cnames)
             all_cases_files.to_excel('%sall_cases_files.xlsx'%self.dir_root, index=False)
             print("No file 'all_cases_files.xlsx' in the root folder")
@@ -433,7 +436,8 @@ class Preprocessing:
         all_cases_files.style.apply(Preprocessing._highlight_greater_than, threshold=True, column='skipped', axis=1).to_excel('%sall_cases_files.xlsx'%self.dir_root, index=False)
         #all_cases_files.to_excel('{}all_cases_files_190918.xlsx'.format(self.dir_root), index=False)
         self.all_cases_files = all_cases_files
-        self.file_fif_for_circus = all_cases_files.loc[(all_cases_files.folder==self.dir_case)&(all_cases_files.skipped==False),'file'].values[0]
+        if not first_time:
+            self.file_fif_for_circus = all_cases_files.loc[(all_cases_files.folder==self.dir_case)&(all_cases_files.skipped==False),'file'].values[0]
                 
         #shutil.copyfile('{}all_cases_files_190918.xlsx'.format(self.dir_root), "C:/Users/TFedele/Google Drive/__PC_HSE/Results/MEG Valerii/Valerii/all_cases_files_190918.xlsx")
         

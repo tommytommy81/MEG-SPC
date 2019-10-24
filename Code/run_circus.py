@@ -201,10 +201,11 @@ class Circus:
         self.roc_curve.loc[len(self.roc_curve)] = [self.case, sensor, self.cut_off, self.spike_thresh, self.N_t, Detected, Fitted, Best_fits, Manual_spikes, TP, FP, FN, Sensitivity, Specificity]
         self.roc_curve.to_excel('%sROC_curve_%s_%s_%s.xlsx'%(self.folder, self.case, self.fname, sensor), index=False)
 
-    def params_iterations(self, n_cores=7, run_spc=True, ROC=False):
+    def params_iterations(self, n_cores=7, run_spc=True, ROC=False, sensors=['grad','mag']):
         from ipypb import track
         self.sensors_params = {}
-        for sensor in track(self.sensors, label='Sensors '):    
+        #sensors = self.sensors
+        for sensor in track(sensors, label='Sensors '):    
             self.set_params_spc(sensor)
             if run_spc==True:
                 self.run_circus(n_cores=n_cores, multi=True)

@@ -1,3 +1,23 @@
+import matplotlib.pyplot as plt
+
+class NoStdStreams(object):
+    
+    def __init__(self,stdout = None, stderr = None):
+        import sys, os
+        self.devnull = open(os.devnull,'w')
+        self._stdout = stdout or self.devnull or sys.stdout
+        self._stderr = stderr or self.devnull or sys.stderr
+    def __enter__(self):
+        import sys
+        self.old_stdout, self.old_stderr = sys.stdout, sys.stderr
+        self.old_stdout.flush(); self.old_stderr.flush()
+        sys.stdout, sys.stderr = self._stdout, self._stderr
+    def __exit__(self, exc_type, exc_value, traceback):
+        import sys
+        self._stdout.flush(); self._stderr.flush()
+        sys.stdout = self.old_stdout
+        sys.stderr = self.old_stderr
+        self.devnull.close()
            
 class Templates:
     """ Here we read templates from the folder and create plots for them"""
@@ -348,13 +368,13 @@ class Templates:
             self.plot_final_temp_n(system_type)
         except Exception: traceback.print_exc()
 
-    def plot_all_templates(self, tsss_file):
+    def plot_all_templates(self, tsss_file, system_type='Windows'):
         """ Plot all templates """
         from ipypb import track
         import mne
         
         data = mne.io.read_raw_fif(tsss_file, preload=True, verbose=False)
         for t_name in track(self.main_temp_names, label='Templates '):
-            self.plot_all_temp_n(data, t_name, 'Windows')
+            self.plot_all_temp_n(data, t_name, system_type)
         
         del data
