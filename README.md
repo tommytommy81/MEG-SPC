@@ -25,7 +25,6 @@ Inkscape
 
 Package | Version
 ------------ | -------------
-
 mne | 0.18.2
 ipypb | 0.5.2
 spyking-circus | 0.8.3
