@@ -23,10 +23,11 @@ python 3.6
 Anaconda 3
 Inkscape
 
-Packages:
+Package | Version
+------------ | -------------
 
-mne 0.18.2
-ipypb 0.5.2
-spyking-circus 0.8.3
-svgutils 0.3.1
+mne | 0.18.2
+ipypb | 0.5.2
+spyking-circus | 0.8.3
+svgutils | 0.3.1
 
