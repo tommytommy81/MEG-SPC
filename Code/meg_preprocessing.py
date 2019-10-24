@@ -20,7 +20,7 @@ class NoStdStreams(object):
 class Preprocessing:
     """ Here we run all preprocessing steps"""
 
-    def __init__(self, directory, case, dir_root='D:/Valerii/45_cases/'):
+    def __init__(self, dir_root, case, directory):
         from pathlib import Path
         import os
         import pandas as pd
