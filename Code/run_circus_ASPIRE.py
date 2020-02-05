@@ -22,7 +22,7 @@ class NoStdStreams(object):
 class Circus:
     """ Here we run Spyking Circus, plot ROC etc."""
 
-    def __init__(self, directory, case, folder, fif_file, mdip, cc_merge=0.9, cut_off=9, N_t=80, MAD=6.0, fname='_'):
+    def __init__(self, directory, case, folder, fif_file, cc_merge=0.9, cut_off=9, cut_off_top=200, N_t=80, MAD=6.0, fname='_'):
         import os
         import traceback
         import pandas as pd
@@ -35,10 +35,10 @@ class Circus:
         self.spike_thresh = MAD
         self.N_t = N_t
         self.cut_off = cut_off
+        self.cut_off_top = cut_off_top
         self.cc_merge = cc_merge
-        self.mspikes = pd.DataFrame(mdip.begin.values, columns=['Time'])
         self.fname = fname
-        return print('Folder: %s\nFile: %s\nNumber manual spikes: %s \nParameters: N_t = %s, Cut off = %s, Threshold = %s, cc_merge = %s\n'%(self.folder, self.filename, len(self.mspikes), self.N_t, self.cut_off, self.spike_thresh, self.cc_merge))
+        return print('Folder: %s\nFile: %s\nParameters: N_t = %s, Cut off = (%s,%s), Threshold = %s, cc_merge = %s\n'%(self.folder, self.filename, self.N_t, self.cut_off, self.cut_off_top, self.spike_thresh, self.cc_merge))
 
     def set_params_spc(self, sensor='grad'):
         """ Set parameters file for Spyking Circus"""
@@ -47,13 +47,13 @@ class Circus:
         import pkg_resources
         from circus.shared.parser import CircusParser
         
-        self.output_dir = 'cut_off_%s_spike_thresh_%s_N_t_%s_%s_(%s)'%(self.cut_off, self.spike_thresh, self.N_t, sensor, self.filename[:-4])
+        self.output_dir = 'cut_off_(%s,%s)_MAD_%s_N_t_%s_cc_merge_%s_%s'%(self.cut_off,self.cut_off_top, self.spike_thresh, self.N_t, self.cc_merge, sensor)
         os.makedirs(self.folder + self.output_dir,exist_ok=True)
         os.makedirs('%s%s/Results'%(self.folder, self.output_dir), exist_ok=True)
         self.output_dir_path = '%s%s/'%(self.folder, self.output_dir)
         self.output_dir_results_path = '%s%s/Results/'%(self.folder, self.output_dir)
         
-        self.stream_mode = 'multi-files'
+        self.stream_mode = 'None' #'multi-files'
         self.path_params = '%s%s.params'%(self.folder,self.filename[:-4])
         config_file = os.path.abspath(pkg_resources.resource_filename('circus', 'config.params'))
         probe_file = os.path.abspath(pkg_resources.resource_filename('circus', 'meg_306.prb'))
@@ -69,6 +69,7 @@ class Circus:
         self.params.write('data','sampling_rate','1000')
         #params.write('data','chunk_size','10')
 
+        self.params.write('detection','radius', '6') # Radius [in um] (if auto, read from the prb file)
         self.params.write('detection','N_t', str(self.N_t))
         self.params.write('detection','spike_thresh', str(self.spike_thresh))
         self.params.write('detection','peaks','both')
@@ -80,25 +81,34 @@ class Circus:
         else:
             self.params.write('detection','dead_channels','{ 1 : [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 65, 68, 71, 74, 77, 80, 83, 86, 89, 92, 95, 98, 101, 104, 107, 110, 113, 116, 119, 122, 125, 128, 131, 134, 137, 140, 143, 146, 149, 152, 155, 158, 161, 164, 167, 170, 173, 176, 179, 182, 185, 188, 191, 194, 197, 200, 203, 206, 209, 212, 215, 218, 221, 224, 227, 230, 233, 236, 239, 242, 245, 248, 251, 254, 257, 260, 263, 266, 269, 272, 275, 278, 281, 284, 287, 290, 293, 296, 299, 302, 305] }')
 
-        self.params.write('filtering','cut_off','%s, 100'%self.cut_off)
+        self.params.write('filtering','cut_off','%s, %s'%(self.cut_off, self.cut_off_top))
+        #self.params.write('filtering','filter','False')
 
         self.params.write('whitening','safety_time','auto')
         self.params.write('whitening','max_elts','10000')
         self.params.write('whitening','nb_elts','0.1')
+        self.params.write('whitening','spatial','False')
 
+        self.params.write('clustering','extraction','mean-raw')
         self.params.write('clustering','safety_space','False')
         self.params.write('clustering','safety_time','1')
         self.params.write('clustering','max_elts','10000')
         self.params.write('clustering','nb_elts','0.001')
         self.params.write('clustering','nclus_min','0.0001')
         self.params.write('clustering','smart_search','False')
+        self.params.write('clustering','sim_same_elec','1')
         self.params.write('clustering','sensitivity','5')
         self.params.write('clustering','cc_merge', str(self.cc_merge))
-        self.params.write('clustering','cc_mixtures','0.6')
+        self.params.write('clustering','dispersion','(5, 5)')
+        self.params.write('clustering','noise_thr','0.9')
+        #self.params.write('clustering','remove_mixture','False')
+        self.params.write('clustering','cc_mixtures','0.1')
         self.params.write('clustering','make_plots','png')
-
-        self.params.write('fitting','amp_limits','(0.3,3)')
-        self.params.write('fitting','amp_auto','True')
+        
+    
+        self.params.write('fitting','chunk_size','60')
+        self.params.write('fitting','amp_limits','(0.01,10)')
+        self.params.write('fitting','amp_auto','False')
         self.params.write('fitting','collect_all','True')
 
         self.params.write('merging','cc_overlap','0.4')
@@ -130,14 +140,21 @@ class Circus:
             for item in out:
                 f.write(item)
 
-    def run_circus(self, n_cores=7, multi=False):
+    def run_circus(self, n_cores=7, multi=False, only_fitting=False):
         """ Run Spyking Circus"""
         
-        cmd = 'spyking-circus %s -m filtering,whitening,clustering,fitting -c %s'%(self.folder + self.filename, n_cores)
-        cmd_multi = 'circus-multi %s'%(self.folder + self.filename)
+        if only_fitting:
+            cmd = 'spyking-circus %s -m filtering,fitting -c %s'%(self.folder + self.filename, n_cores)
+            cmd_multi = 'circus-multi %s'%(self.folder + self.filename)
+        else:
+            cmd = 'spyking-circus %s -m filtering,whitening,clustering,fitting -c %s'%(self.folder + self.filename, n_cores)
+            cmd_multi = 'circus-multi %s'%(self.folder + self.filename)
         
         p, out, err = Circus.run_command_and_print_output(cmd)
-        Circus.out_in_file(self.folder, out, 'output.txt')
+        if only_fitting:
+            Circus.out_in_file(self.folder, out, 'output_fitting.txt')
+        else:
+            Circus.out_in_file(self.folder, out, 'output_filtering_whitening_clustering.txt')
         
         if err != []:
             Circus.out_in_file(self.folder, err, 'output_err.txt') 
@@ -163,61 +180,21 @@ class Circus:
         #templates = add_bad_annot_time(directory, case, templates.sort_values('Spiketimes').reset_index(drop=True))
         self.templates.to_excel('%sTemplates_%s_all.xlsx'%(self.output_dir_results_path, self.case), index=False)
 
-    def find_nearest(self, array, value):
-        import numpy as np
-        array = np.asarray(array)
-        idx = (np.abs(array - value)).argmin()
-        return array[idx]
-
-    def nearest_mspike(self):
-        self.mspikes['Temp'] = None
-        self.mspikes['Temp_time'] = None
-        self.mspikes['Difference'] = None
-        self.mspikes['Temp_amp'] = None
-        for i in range(len(self.mspikes.Time.values)):
-            nearest = Circus.find_nearest(self, self.templates.Spiketimes.values, self.mspikes.Time[i])
-            self.mspikes.at[i, 'Temp_time'] = self.templates.Spiketimes[self.templates.Spiketimes == nearest].values[0]
-            self.mspikes.at[i, 'Temp'] = self.templates.Template[self.templates.Spiketimes == nearest].values[0]
-            self.mspikes.at[i, 'Difference'] = -(self.mspikes.Time[i] - self.mspikes.at[i, 'Temp_time'])/1000
-            self.mspikes.at[i, 'Temp_amp'] = self.templates.Amplitudes[self.templates.Spiketimes == nearest].values[0]
-        self.mspikes.to_excel('%sMspikes_and_spyking_circus_%s.xlsx'%(self.output_dir_results_path, self.case), index=False)
-   
-    def ROC(self, sensor='grad', window=0.02, GoF=0.05):
-        import numpy as np
-        import pandas as pd
-        self.roc_curve = pd.DataFrame(columns = ('Case','Sensors','Cut_off','MAD','N_t','Detected','Fitted','Best_fits','Manual_spikes','TP','FP','FN','Sensitivity','Specificity'))
-        Detected = 'Not calculated'
-        FP = 'Not calculated'
-        Specificity = 'Not calculated'
-        Circus.nearest_mspike(self)
-        
-        Fitted = len(self.templates)
-        Best_fits = len(self.templates[np.abs(self.templates.Amplitudes-1)<GoF])
-        Manual_spikes = len(self.mspikes)
-        TP = len(self.mspikes[np.abs(self.mspikes.Difference) <= window])
-        FN = len(self.mspikes[np.abs(self.mspikes.Difference) > window])
-        if len(self.mspikes) >0:
-            Sensitivity = TP/len(self.mspikes)
-        else: Sensitivity = 'No information'
-        self.roc_curve.loc[len(self.roc_curve)] = [self.case, sensor, self.cut_off, self.spike_thresh, self.N_t, Detected, Fitted, Best_fits, Manual_spikes, TP, FP, FN, Sensitivity, Specificity]
-        self.roc_curve.to_excel('%sROC_curve_%s_%s_%s.xlsx'%(self.folder, self.case, self.fname, sensor), index=False)
-
-    def params_iterations(self, n_cores=7, run_spc=True, ROC=False, sensors=['grad','mag']):
+    def params_iterations(self, n_cores=7, run_spc=True, only_fitting = False, sensors=['grad','mag']):
+        import os 
         from ipypb import track
         self.sensors_params = {}
         #sensors = self.sensors
         for sensor in track(sensors, label='Sensors '):    
             self.set_params_spc(sensor)
             if run_spc==True:
-                self.run_circus(n_cores=n_cores, multi=True)
+                self.run_circus(n_cores=n_cores, multi=True, only_fitting=only_fitting)
             
             self.spc_results()
-            
-            if ROC==True:
-                self.ROC(sensor=sensor)
                     
             templates_for_aspire = self.templates.copy()
             templates_for_aspire['Template'] = templates_for_aspire['Template'].map(lambda x: int(x.split('_')[1]))
+            os.makedirs(self.folder + 'Aspire/',exist_ok=True)
             templates_for_aspire.to_csv('%sAspire/Templates_%s_%s.csv'%(self.folder, self.filename[:-6], sensor), index=False)
             
             self.sensors_params[sensor] = self.params
