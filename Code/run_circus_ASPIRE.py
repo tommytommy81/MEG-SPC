@@ -22,7 +22,7 @@ class NoStdStreams(object):
 class Circus:
     """ Here we run Spyking Circus, plot ROC etc."""
 
-    def __init__(self, directory, case, folder, fif_file, cc_merge=0.9, cut_off=9, N_t=80, MAD=6.0, fname='_'):
+    def __init__(self, directory, case, folder, fif_file, cc_merge=0.9, cut_off=9, cut_off_top=200, N_t=80, MAD=6.0, fname='_'):
         import os
         import traceback
         import pandas as pd
@@ -35,9 +35,10 @@ class Circus:
         self.spike_thresh = MAD
         self.N_t = N_t
         self.cut_off = cut_off
+        self.cut_off_top = cut_off_top
         self.cc_merge = cc_merge
         self.fname = fname
-        return print('Folder: %s\nFile: %s\nParameters: N_t = %s, Cut off = %s, Threshold = %s, cc_merge = %s\n'%(self.folder, self.filename, self.N_t, self.cut_off, self.spike_thresh, self.cc_merge))
+        return print('Folder: %s\nFile: %s\nParameters: N_t = %s, Cut off = (%s,%s), Threshold = %s, cc_merge = %s\n'%(self.folder, self.filename, self.N_t, self.cut_off, self.cut_off_top, self.spike_thresh, self.cc_merge))
 
     def set_params_spc(self, sensor='grad'):
         """ Set parameters file for Spyking Circus"""
@@ -46,7 +47,7 @@ class Circus:
         import pkg_resources
         from circus.shared.parser import CircusParser
         
-        self.output_dir = 'cut_off_%s_spike_thresh_%s_N_t_%s_%s_(%s)'%(self.cut_off, self.spike_thresh, self.N_t, sensor, self.filename[:-4])
+        self.output_dir = 'cut_off_(%s,%s)_MAD_%s_N_t_%s_cc_merge_%s_%s'%(self.cut_off,self.cut_off_top, self.spike_thresh, self.N_t, self.cc_merge, sensor)
         os.makedirs(self.folder + self.output_dir,exist_ok=True)
         os.makedirs('%s%s/Results'%(self.folder, self.output_dir), exist_ok=True)
         self.output_dir_path = '%s%s/'%(self.folder, self.output_dir)
@@ -80,12 +81,15 @@ class Circus:
         else:
             self.params.write('detection','dead_channels','{ 1 : [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 65, 68, 71, 74, 77, 80, 83, 86, 89, 92, 95, 98, 101, 104, 107, 110, 113, 116, 119, 122, 125, 128, 131, 134, 137, 140, 143, 146, 149, 152, 155, 158, 161, 164, 167, 170, 173, 176, 179, 182, 185, 188, 191, 194, 197, 200, 203, 206, 209, 212, 215, 218, 221, 224, 227, 230, 233, 236, 239, 242, 245, 248, 251, 254, 257, 260, 263, 266, 269, 272, 275, 278, 281, 284, 287, 290, 293, 296, 299, 302, 305] }')
 
-        self.params.write('filtering','cut_off','%s, 200'%self.cut_off)
+        self.params.write('filtering','cut_off','%s, %s'%(self.cut_off, self.cut_off_top))
+        #self.params.write('filtering','filter','False')
 
         self.params.write('whitening','safety_time','auto')
         self.params.write('whitening','max_elts','10000')
         self.params.write('whitening','nb_elts','0.1')
+        self.params.write('whitening','spatial','False')
 
+        self.params.write('clustering','extraction','mean-raw')
         self.params.write('clustering','safety_space','False')
         self.params.write('clustering','safety_time','1')
         self.params.write('clustering','max_elts','10000')
@@ -93,15 +97,18 @@ class Circus:
         self.params.write('clustering','nclus_min','0.0001')
         self.params.write('clustering','smart_search','False')
         self.params.write('clustering','sim_same_elec','1')
-        self.params.write('clustering','sensitivity','2')
+        self.params.write('clustering','sensitivity','5')
         self.params.write('clustering','cc_merge', str(self.cc_merge))
-        self.params.write('clustering','dispersion','(1, 9)')
-        self.params.write('clustering','cc_mixtures','0.6')
+        self.params.write('clustering','dispersion','(5, 5)')
+        self.params.write('clustering','noise_thr','0.9')
+        #self.params.write('clustering','remove_mixture','False')
+        self.params.write('clustering','cc_mixtures','0.1')
         self.params.write('clustering','make_plots','png')
+        
     
-        self.params.write('fitting','chunk_size','1')
-        self.params.write('fitting','amp_limits','(0.1,8)')
-        self.params.write('fitting','amp_auto','True')
+        self.params.write('fitting','chunk_size','60')
+        self.params.write('fitting','amp_limits','(0.01,10)')
+        self.params.write('fitting','amp_auto','False')
         self.params.write('fitting','collect_all','True')
 
         self.params.write('merging','cc_overlap','0.4')

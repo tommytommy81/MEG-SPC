@@ -22,7 +22,7 @@ class NoStdStreams(object):
 class Templates:
     """ Here we read templates from the folder and create plots for them"""
 
-    def __init__(self, directory, case, fif_file, params, sensors='grad', n_sp=100, cc_merge=0.9, cut_off=9, N_t=80, MAD=6.0):
+    def __init__(self, directory, case, fif_file, params, sensors='grad', n_sp=100, cc_merge=0.9, cut_off=9,cut_off_top=200, N_t=80, MAD=6.0):
         """ Set parameters to open
         the folder with Syking Circus results   
         """
@@ -35,15 +35,16 @@ class Templates:
         self.sensors = sensors
         self.n_sp = n_sp
         self.folder = '%sSpyking_circus/%s_%s/'%(self.case_dir, self.case, fif_file[:-4])
-        output_dir = 'cut_off_%s_spike_thresh_%s_N_t_%s_%s_(%s)'%(cut_off, MAD, N_t, sensors, fif_file[:-4])
+        output_dir = 'cut_off_(%s,%s)_MAD_%s_N_t_%s_cc_merge_%s_%s'%(cut_off,cut_off_top, MAD, N_t, cc_merge, sensors)
         self.filename = '%s_0.npy'%fif_file[:-4]
         self.params = params#CircusParser('%s/%s/%s'%(self.folder, output_dir, self.filename))
         
         self.spike_thresh = float(self.params.get('detection','spike_thresh'))
         self.N_t = self.params.getint('detection','N_t')
-        self.cut_off = int(self.params.get('filtering','cut_off')[0])
+        self.cut_off = 0.1 #int(self.params.get('filtering','cut_off')[0])
+        self.cut_off_top = cut_off_top
         self.cc_merge = float(self.params.get('clustering','cc_merge'))
-        self.output_dir = 'cut_off_%s_spike_thresh_%s_N_t_%s_%s_(%s)'%(self.cut_off, self.spike_thresh, self.N_t, self.sensors, self.filename[:-4])
+        self.output_dir = 'cut_off_(%s,%s)_MAD_%s_N_t_%s_cc_merge_%s_%s'%(self.cut_off,self.cut_off_top, self.spike_thresh, self.N_t, self.cc_merge, self.sensors)
         
         try:
             os.makedirs('%s%s/Templates_plots'%(self.folder, self.output_dir),exist_ok=True)
@@ -61,7 +62,7 @@ class Templates:
         import numpy as np
         self.templates = pd.read_excel('%s%s/Results/Templates_%s_all.xlsx'%(self.folder, self.output_dir, self.case))
         self.templates['Time'] = self.templates['Spiketimes']
-        self.templates = self.templates[abs(self.templates.Amplitudes-1)<0.5].reset_index(drop=True).copy()
+        #self.templates = self.templates[abs(self.templates.Amplitudes-1)<0.5].reset_index(drop=True).copy()
         self.main_temp_names = np.unique(self.templates['Template'].value_counts()[self.templates['Template'].value_counts()>=self.n_sp].index.tolist())
         
     def all_temp_barplot(self, name=''):
@@ -351,7 +352,7 @@ class Templates:
         plot7.moveto(20, 715)
         #plot7.scale_xy(1.5, 1.)
 
-        params_plot_fin = ['channels = %s'%self.sensors, 'filtering = %s-100 Hz'%self.cut_off, 
+        params_plot_fin = ['channels = %s'%self.sensors, 'filtering = %s-%s Hz'%(self.cut_off, self.cut_off_top), 
                            'N_t = %s ms'%self.N_t, 'spike_thresh = %s'%self.spike_thresh,'isolation = False', 
                            'cc_merge = %s'%self.cc_merge, 'cc_overlap = 0.4', 'amp_limits = auto','safety_time = 1ms', 'cc_mixtures = 0.6']
         l = []
