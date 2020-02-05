@@ -1,0 +1,1146 @@
+from .shared.utils import *
+import circus.shared.algorithms as algo
+from .shared import plot
+import warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore",category=FutureWarning)
+    import h5py
+from circus.shared.probes import get_nodes_and_edges
+from .shared.files import get_dead_times
+from circus.shared.messages import print_and_log, init_logging
+from circus.shared.utils import get_parallel_hdf5_flag
+
+
+def main(params, nb_cpu, nb_gpu, use_gpu):
+
+    numpy.random.seed(520)
+    parallel_hdf5  = get_parallel_hdf5_flag(params)
+    #params         = detect_memory(params)
+    logger         = init_logging(params.logfile)
+    logger         = logging.getLogger('circus.clustering')
+    #################################################################
+    data_file      = params.data_file
+    data_file.open()
+    N_e            = params.getint('data', 'N_e')
+    N_total        = params.nb_channels
+    N_t            = params.getint('detection', 'N_t')
+    dist_peaks     = params.getint('detection', 'dist_peaks')
+    template_shift = params.getint('detection', 'template_shift')
+    file_out_suff  = params.get('data', 'file_out_suff')
+    sign_peaks     = params.get('detection', 'peaks')
+    alignment      = params.getboolean('detection', 'alignment')
+    smoothing      = params.getboolean('detection', 'smoothing')
+    isolation      = params.getboolean('detection', 'isolation')
+    over_factor    = float(params.getint('detection', 'oversampling_factor'))
+    matched_filter = params.getboolean('detection', 'matched-filter')
+    spike_thresh   = params.getfloat('detection', 'spike_thresh')
+    smoothing_factor = params.getfloat('detection', 'smoothing_factor')
+    if params.getboolean('data', 'global_tmp'):
+        tmp_path_loc = os.path.join(os.path.abspath(params.get('data', 'file_out_suff')), 'tmp')
+    else:
+        tmp_path_loc = tempfile.gettempdir()
+
+    plot_path      = os.path.join(params.get('data', 'file_out_suff'), 'plots')
+    do_temporal_whitening = params.getboolean('whitening', 'temporal')
+    do_spatial_whitening  = params.getboolean('whitening', 'spatial')
+    safety_time    = params.getint('clustering', 'safety_time')
+    safety_space   = params.getboolean('clustering', 'safety_space')
+    comp_templates = params.getboolean('clustering', 'compress')
+    dispersion     = params.get('clustering', 'dispersion').replace('(', '').replace(')', '').split(',')
+    dispersion     = list(map(float, dispersion))
+    nodes, edges   = get_nodes_and_edges(params)
+    chunk_size     = params.getint('data', 'chunk_size')
+    max_elts_elec  = params.getint('clustering', 'max_elts')
+    if sign_peaks == 'both':
+       max_elts_elec *= 2
+    nb_elts        = int(params.getfloat('clustering', 'nb_elts')*N_e*max_elts_elec)
+    nb_repeats     = params.getint('clustering', 'nb_repeats')
+    nclus_min      = params.getfloat('clustering', 'nclus_min')
+    make_plots     = params.get('clustering', 'make_plots')
+    sim_same_elec  = params.getfloat('clustering', 'sim_same_elec')
+    noise_thr      = params.getfloat('clustering', 'noise_thr')
+    remove_mixture = params.getboolean('clustering', 'remove_mixture')
+    extraction     = params.get('clustering', 'extraction')
+    smart_search   = params.getboolean('clustering', 'smart_search')
+    n_abs_min      = params.getint('clustering', 'n_abs_min')
+    sensitivity    = params.getfloat('clustering', 'sensitivity')
+    hdf5_compress  = params.getboolean('data', 'hdf5_compress')
+    blosc_compress = params.getboolean('data', 'blosc_compress')
+    test_clusters  = params.getboolean('clustering', 'test_clusters')
+    tmp_limits     = params.get('fitting', 'amp_limits').replace('(', '').replace(')', '').split(',')
+    amp_limits     = list(map(float, tmp_limits))
+    elt_count      = 0
+    m_ratio        = nclus_min
+    sub_output_dim = params.getint('clustering', 'sub_dim')
+    inv_nodes         = numpy.zeros(N_total, dtype=numpy.int32)
+    inv_nodes[nodes]  = numpy.argsort(nodes)
+    to_write          = ['clusters_', 'times_', 'data_', 'peaks_']
+    ignore_dead_times = params.getboolean('triggers', 'ignore_times')
+    jitter_range     = params.getint('detection', 'jitter_range')
+    template_shift_2 = template_shift + jitter_range
+    nb_ss_bins        = 50
+    use_hanning      = params.getboolean('detection', 'hanning')
+    #################################################################
+
+    if sign_peaks == 'negative':
+        search_peaks = ['neg']
+    elif sign_peaks == 'positive':
+        search_peaks = ['pos']
+    elif sign_peaks == 'both':
+        search_peaks = ['neg', 'pos']
+
+    smart_searches = {}
+    for p in search_peaks:
+        smart_searches[p] = numpy.ones(N_e, dtype=numpy.float32)*int(smart_search)
+
+    basis = {}
+
+    if use_hanning:
+        hanning_filter = numpy.hanning(N_t)
+
+    if sign_peaks in ['negative', 'both']:
+        basis['proj_neg'], basis['rec_neg'] = io.load_data(params, 'basis')
+    if sign_peaks in ['positive', 'both']:
+        basis['proj_pos'], basis['rec_pos'] = io.load_data(params, 'basis-pos')
+
+    thresholds = io.load_data(params, 'thresholds')
+    mads = io.load_data(params, 'mads')
+    if do_spatial_whitening:
+        spatial_whitening  = io.load_data(params, 'spatial_whitening')
+    if do_temporal_whitening:
+        temporal_whitening = io.load_data(params, 'temporal_whitening')
+
+    if matched_filter:
+        if sign_peaks in ['negative', 'both']:
+            waveform_neg  = io.load_data(params, 'waveform')
+            waveform_neg /= (numpy.abs(numpy.sum(waveform_neg))* len(waveform_neg))
+            matched_tresholds_neg = io.load_data(params, 'matched-thresholds')
+        if sign_peaks in ['positive', 'both']:
+            waveform_pos  = io.load_data(params, 'waveform-pos')
+            waveform_pos /= (numpy.abs(numpy.sum(waveform_pos))* len(waveform_pos))
+            matched_tresholds_pos = io.load_data(params, 'matched-thresholds-pos')
+
+    if ignore_dead_times:
+        all_dead_times = get_dead_times(params)
+
+    result   = {}
+
+    if use_gpu:
+        import cudamat as cmt
+        ## Need to properly handle multi GPU per MPI nodes?
+        if nb_gpu > nb_cpu:
+            gpu_id = int(comm.rank//nb_cpu)
+        else:
+            gpu_id = 0
+        cmt.cuda_set_device(gpu_id)
+        cmt.init()
+        cmt.cuda_sync_threads()
+
+    if test_clusters:
+        injected_spikes = io.load_data(params, 'injected_spikes')
+
+    if comm.rank == 0:
+        if not os.path.exists(tmp_path_loc):
+            os.makedirs(tmp_path_loc)
+
+    if alignment:
+        cdata = numpy.linspace(-jitter_range, jitter_range, int(over_factor*2*jitter_range))
+        xdata = numpy.arange(-template_shift_2, template_shift_2 + 1)
+        xoff  = len(cdata)/2.
+
+    if isolation:
+        yoff  = numpy.array(list(range(0, N_t//4)) + list(range(3*N_t//4, N_t)))
+
+    comm.Barrier()
+
+    if use_gpu and do_spatial_whitening:
+        spatial_whitening = cmt.CUDAMatrix(spatial_whitening, copy_on_host=False)
+
+    elec_positions = {}
+
+    for i in range(N_e):
+        result['loc_times_' + str(i)] = numpy.zeros(0, dtype=numpy.uint32)
+        result['all_times_' + str(i)] = numpy.zeros(0, dtype=numpy.uint32)
+        result['times_' + str(i)]     = numpy.zeros(0, dtype=numpy.uint32)
+        result['clusters_' + str(i)]  = numpy.zeros(0, dtype=numpy.int32)
+        result['peaks_' + str(i)]     = numpy.zeros(0, dtype=numpy.uint32)
+        for p in search_peaks:
+            result['pca_%s_' %p + str(i)] = None
+        indices = numpy.take(inv_nodes, edges[nodes[i]])
+        elec_positions[i] = numpy.where(indices == i)[0]
+
+    max_elts_elec //= comm.size
+    nb_elts       //= comm.size
+    few_elts        = False
+    nb_chunks, _    = data_file.analyze(chunk_size)
+
+    if nb_chunks < comm.size:
+
+        res        = io.data_stats(params, show=False)
+        chunk_size = int(res*params.rate//comm.size)
+        if comm.rank == 0:
+            print_and_log(["Too much cores, automatically resizing the data chunks"], 'debug', logger)
+
+        nb_chunks, last_chunk_len = data_file.analyze(chunk_size)
+
+    if smart_search is False:
+        gpass = 1
+    else:
+        gpass = 0
+
+    ## We will perform several passes to enhance the quality of the clustering
+    while gpass < (nb_repeats + 1):
+
+        comm.Barrier()
+
+        if gpass == 1:
+            sdata = all_gather_array(smart_searches[search_peaks[0]][comm.rank::comm.size], comm, 0)
+
+        if comm.rank == 0:
+            if gpass == 0:
+                print_and_log(["Searching random spikes to sample amplitudes..."], 'default', logger)
+            elif gpass == 1:
+                if not numpy.all(sdata > 0):
+                    lines = ["Smart Search disabled on %d electrodes" %(numpy.sum(sdata == 0))]
+                    print_and_log(lines, 'debug', logger)
+                if numpy.any(sdata > 0):
+                    print_and_log(["Smart Search of good spikes for the clustering (%d/%d)..." %(gpass, nb_repeats)], 'default', logger)
+                else:
+                    print_and_log(["Searching random spikes for the clustering (%d/%d) (no smart search)" %(gpass, nb_repeats)], 'default', logger)
+            else:
+                print_and_log(["Searching random spikes to refine the clustering (%d/%d)..." %(gpass, nb_repeats)], 'default', logger)
+
+        for i in range(N_e):
+            if gpass == 0:
+                for p in search_peaks:
+                    result['tmp_%s_' %p + str(i)] = numpy.zeros(0, dtype=numpy.float32)
+                    result['nb_chunks_%s_' %p + str(i)] = 1
+            else:
+                n_neighb = len(edges[nodes[i]])
+                for p in search_peaks:
+                    result['tmp_%s_' %p + str(i)] = numpy.zeros((0, basis['proj_%s' %p].shape[1] * n_neighb), dtype=numpy.float32)
+
+            # If not the first pass, we sync all the detected times among nodes and give all nodes the w/pca
+            result['all_times_' + str(i)] = numpy.concatenate((result['all_times_' + str(i)], all_gather_array(result['loc_times_' + str(i)], comm, dtype='uint32', compress=blosc_compress)))
+            result['loc_times_' + str(i)] = numpy.zeros(0, dtype=numpy.uint32)
+
+            if gpass == 1:
+                for p in search_peaks:
+                    result['pca_%s_' %p  + str(i)] = comm.bcast(result['pca_%s_' %p + str(i)], root=numpy.mod(i, comm.size))
+                    result['data_%s_' %p + str(i)] = numpy.zeros((0, basis['proj_%s' %p].shape[1] * n_neighb), dtype=numpy.float32)
+                    result['data_'  + str(i)]      = numpy.zeros((0, sub_output_dim), dtype=numpy.float32)
+        # I guess this is more relevant, to take signals from all over the recordings
+        numpy.random.seed(gpass)
+        all_chunks = numpy.random.permutation(numpy.arange(nb_chunks, dtype=numpy.int64))
+        rejected   = 0
+        elt_count  = 0
+
+        ## This is not easy to read, but during the smart search pass, we need to loop over all chunks, and every nodes should
+        ## search spikes for a subset of electrodes, to avoid too many communications.
+        if gpass <= 1:
+            nb_elecs           = numpy.sum(comm.rank == numpy.mod(numpy.arange(N_e), comm.size))
+            loop_max_elts_elec = params.getint('clustering', 'max_elts')
+            if sign_peaks == 'both':
+                loop_max_elts_elec *= 2
+            loop_nb_elts       = numpy.int64(params.getfloat('clustering', 'nb_elts') * nb_elecs * loop_max_elts_elec)
+            to_explore         = range(nb_chunks)
+
+        else:
+            loop_max_elts_elec = max_elts_elec
+            loop_nb_elts       = nb_elts
+            to_explore         = range(comm.rank, nb_chunks, comm.size)
+
+        if comm.rank == 0:
+            to_explore = get_tqdm_progressbar(to_explore)
+
+        comm.Barrier()
+        ## Random selection of spikes
+
+        for gcount, gidx in enumerate(to_explore):
+            gidx = all_chunks[gidx]
+
+            if (elt_count < loop_nb_elts):
+                #print "Node", comm.rank, "is analyzing chunk", gidx, "/", nb_chunks, " ..."
+                local_chunk, t_offset = data_file.get_data(gidx, chunk_size, nodes=nodes)
+                local_shape           = len(local_chunk)
+                if do_spatial_whitening:
+                    if use_gpu:
+                        local_chunk = cmt.CUDAMatrix(local_chunk, copy_on_host=False)
+                        local_chunk = local_chunk.dot(spatial_whitening).asarray()
+                    else:
+                        local_chunk = numpy.dot(local_chunk, spatial_whitening)
+                if do_temporal_whitening:
+                    local_chunk = scipy.ndimage.filters.convolve1d(local_chunk, temporal_whitening, axis=0, mode='constant')
+                #print "Extracting the peaks..."
+                all_peaktimes = numpy.zeros(0, dtype=numpy.uint32)
+                all_extremas  = numpy.zeros(0, dtype=numpy.uint32)
+
+                if matched_filter:
+                    if sign_peaks in ['positive', 'both']:
+                        filter_chunk = scipy.ndimage.filters.convolve1d(local_chunk, waveform_pos, axis=0, mode='constant')
+                        for i in range(N_e):
+                            peaktimes = algo.detect_peaks(filter_chunk[:, i], matched_tresholds_pos[i], mpd=dist_peaks)
+                            all_peaktimes   = numpy.concatenate((all_peaktimes, peaktimes))
+                            all_extremas    = numpy.concatenate((all_extremas, i*numpy.ones(len(peaktimes), dtype=numpy.uint32)))
+
+                    if sign_peaks in ['negative', 'both']:
+                        filter_chunk = scipy.ndimage.filters.convolve1d(local_chunk, waveform_neg, axis=0, mode='constant')
+                        for i in range(N_e):
+                            peaktimes = algo.detect_peaks(filter_chunk[:, i], matched_tresholds_neg[i], mpd=dist_peaks)
+                            all_peaktimes   = numpy.concatenate((all_peaktimes, peaktimes))
+                            all_extremas    = numpy.concatenate((all_extremas, i*numpy.ones(len(peaktimes), dtype=numpy.uint32)))
+                else:
+
+                    for i in range(N_e):
+                        if sign_peaks == 'negative':
+                            peaktimes = algo.detect_peaks(local_chunk[:, i], thresholds[i], valley=True, mpd=1) #mpd=dist_peaks
+                        elif sign_peaks == 'positive':
+                            peaktimes = algo.detect_peaks(local_chunk[:, i], thresholds[i], valley=False, mpd=20)
+                        elif sign_peaks == 'both':
+                            #------------------------------------MEG-SPIKES--------------------------------------------------#
+                            if i == 144:
+                                plot_ts = False
+                            else: plot_ts = False
+
+                            peaktimes = algo.detect_peaks(local_chunk[:, i], thresholds[i], valley=False, mpd=dist_peaks, show=plot_ts, chunk_number=gidx) #numpy.abs(local_chunk[:, i])   
+                            #------------------------------------MEG-SPIKES--------------------------------------------------#
+                        all_peaktimes = numpy.concatenate((all_peaktimes, peaktimes))
+                        all_extremas  = numpy.concatenate((all_extremas, i*numpy.ones(len(peaktimes), dtype=numpy.uint32)))
+
+                #print "Removing the useless borders..."
+                if alignment:
+                    local_borders = (template_shift_2, local_shape - template_shift_2)
+                else:
+                    local_borders = (template_shift, local_shape - template_shift)
+                idx             = (all_peaktimes >= local_borders[0]) & (all_peaktimes < local_borders[1])
+                all_peaktimes   = numpy.compress(idx, all_peaktimes)
+                all_extremas    = numpy.compress(idx, all_extremas)
+
+                local_peaktimes = numpy.unique(all_peaktimes)
+                local_offset    = t_offset
+
+                if ignore_dead_times:
+                    indices = numpy.searchsorted(all_dead_times, [t_offset, t_offset + local_shape])
+                    if indices[0] != indices[1]:
+                        local_peaktimes = numpy.array(list(set(local_peaktimes + t_offset).difference(all_dead_times[indices[0]:indices[1]])), dtype=numpy.uint32) - t_offset
+                        local_peaktimes = numpy.sort(local_peaktimes)
+
+                if len(local_peaktimes) > 0:
+
+                    diff_times      = local_peaktimes[-1]-local_peaktimes[0]
+                    all_times       = numpy.zeros((N_e, diff_times+1), dtype=numpy.bool)
+                    min_times       = numpy.maximum(local_peaktimes - local_peaktimes[0] - safety_time, 0)
+                    max_times       = numpy.minimum(local_peaktimes - local_peaktimes[0] + safety_time + 1, diff_times)
+
+                    n_times         = len(local_peaktimes)
+                    argmax_peak     = numpy.random.permutation(numpy.arange(n_times))
+                    all_idx         = numpy.take(local_peaktimes, argmax_peak)
+
+                    if gpass > 1:
+                        for elec in range(N_e):
+                            subset  = result['all_times_' + str(elec)] - local_offset
+                            peaks   = numpy.compress((subset >= 0) & (subset < (local_shape)), subset)
+                            inter   = numpy.in1d(local_peaktimes, peaks)
+                            indices = numpy.take(inv_nodes, edges[nodes[elec]])
+                            remove  = numpy.where(inter == True)[0]
+                            for t in remove:
+                                if safety_space:
+                                    all_times[indices, min_times[t]:max_times[t]] = True
+                                else:
+                                    all_times[elec, min_times[t]:max_times[t]] = True
+
+                    #print "Selection of the peaks with spatio-temporal masks..."
+                    for midx, peak in zip(argmax_peak, all_idx):
+
+                        if elt_count == loop_nb_elts:
+                            break
+
+                        if sign_peaks == 'negative':
+                            elec = numpy.argmin(local_chunk[peak])
+                            negative_peak = True
+                            loc_peak      = 'neg'
+                        elif sign_peaks == 'positive':
+                            elec = numpy.argmax(local_chunk[peak])
+                            negative_peak = False
+                            loc_peak      = 'pos'
+                        elif sign_peaks == 'both':
+                            if N_e == 1:
+                                if local_chunk[peak] < 0:
+                                    negative_peak = True
+                                    loc_peak      = 'neg'
+                                elif local_chunk[peak] > 0:
+                                    negative_peak = False
+                                    loc_peak      = 'pos'
+                                elec = 0
+                            else:
+                                if numpy.abs(numpy.max(local_chunk[peak])) > numpy.abs(numpy.min(local_chunk[peak])):
+                                    elec = numpy.argmax(local_chunk[peak])
+                                    negative_peak = False
+                                    loc_peak      = 'pos'
+                                else:
+                                    elec = numpy.argmin(local_chunk[peak])
+                                    negative_peak = True
+                                    loc_peak      = 'neg'
+
+                        if ((gpass > 1) or (numpy.mod(elec, comm.size) == comm.rank)):
+
+                            indices = numpy.take(inv_nodes, edges[nodes[elec]])
+
+                            if safety_space:
+                                myslice = all_times[indices, min_times[midx]:max_times[midx]]
+                            else:
+                                myslice = all_times[elec, min_times[midx]:max_times[midx]]
+
+                            is_local_extrema = elec in all_extremas[all_peaktimes == peak]
+
+                            if is_local_extrema and not myslice.any():
+
+                                to_accept  = False
+
+                                if gpass == 1:
+                                    to_update = result['data_%s_' %loc_peak + str(elec)]
+                                else:
+                                    to_update = result['tmp_%s_' %loc_peak + str(elec)]
+
+                                if len(to_update) < loop_max_elts_elec:
+
+                                    if alignment:
+                                        idx   = elec_positions[elec]
+                                        zdata = numpy.take(local_chunk[peak - template_shift_2:peak + template_shift_2 + 1], indices, axis=1)
+                                        ydata = numpy.arange(len(indices))
+                                        if len(ydata) == 1:
+                                            #if False:
+                                            #    smoothing_factor = smoothing_factor*xdata.size*mads[elec]**2
+                                            #    f = scipy.interpolate.UnivariateSpline(xdata, zdata, s=smoothing_factor, k=3)
+                                            #else:
+                                            f = scipy.interpolate.UnivariateSpline(xdata, zdata, k=3, s=0)
+                                            if negative_peak:
+                                                rmin = (numpy.argmin(f(cdata)) - xoff)/over_factor
+                                            else:
+                                                rmin = (numpy.argmax(f(cdata)) - xoff)/over_factor
+                                            ddata    = numpy.linspace(rmin - template_shift, rmin + template_shift, N_t)
+                                            sub_mat  = f(ddata).astype(numpy.float32).reshape(N_t, 1)
+                                        else:
+                                            #if False:
+                                            #    smoothing_factor = smoothing_factor*zdata.size*numpy.median(mads[indices])**2
+                                            #    f = scipy.interpolate.RectBivariateSpline(xdata, ydata, zdata, s=smoothing_factor, kx=3, ky=1)
+                                            #else:
+                                            f = scipy.interpolate.RectBivariateSpline(xdata, ydata, zdata, kx=3, ky=1, s=0)
+                                            if negative_peak:
+                                                rmin = (numpy.argmin(f(cdata, idx)[:, 0]) - xoff)/over_factor
+                                            else:
+                                                rmin = (numpy.argmax(f(cdata, idx)[:, 0]) - xoff)/over_factor
+                                            ddata    = numpy.linspace(rmin - template_shift, rmin + template_shift, N_t)
+                                            sub_mat  = f(ddata, ydata).astype(numpy.float32)
+                                    else:
+                                        sub_mat = numpy.take(local_chunk[peak - template_shift:peak + template_shift+1], indices, axis=1)
+                                    
+                                    if use_hanning:
+                                        sub_mat = (sub_mat.T*hanning_filter).T
+
+                                    if isolation:
+                                        is_isolated = numpy.all(numpy.max(numpy.abs(sub_mat[yoff]), 0) <= thresholds[indices])
+                                        to_accept = False
+                                    else:
+                                        is_isolated = True
+
+                                    if is_isolated:
+                                        if gpass == 0:
+                                            to_accept  = True
+                                            idx        = elec_positions[elec]
+                                            ext_amp    = sub_mat[template_shift, idx]
+                                            result['tmp_%s_' %loc_peak + str(elec)] = numpy.concatenate((result['tmp_%s_' %loc_peak + str(elec)], ext_amp))
+                                        elif gpass == 1:
+
+                                            if smart_searches[loc_peak][elec] > 0:
+
+                                                idx     = elec_positions[elec]
+                                                ext_amp = sub_mat[template_shift, idx]
+                                                idx     = numpy.searchsorted(result['bounds_%s_' %loc_peak + str(elec)], ext_amp, 'right') - 1
+                                                to_keep = result['hist_%s_' %loc_peak + str(elec)][idx] < numpy.random.rand()
+
+                                                if to_keep:
+                                                    to_accept = True
+                                                else:
+                                                    rejected += 1
+
+                                            else:
+                                                to_accept = True
+
+                                            if to_accept:
+                                                sub_mat    = numpy.dot(basis['rec_%s' %loc_peak], sub_mat)
+                                                nx, ny     = sub_mat.shape
+                                                sub_mat    = sub_mat.reshape((1, nx * ny))
+                                                result['data_%s_' %loc_peak + str(elec)] = numpy.vstack((result['data_%s_' %loc_peak + str(elec)], sub_mat))
+
+                                        else:
+
+                                            sub_mat    = numpy.dot(basis['rec_%s' %loc_peak], sub_mat)
+                                            nx, ny     = sub_mat.shape
+                                            sub_mat    = sub_mat.reshape((1, nx * ny))
+
+                                            to_accept  = True
+                                            result['tmp_%s_' %loc_peak + str(elec)] = numpy.vstack((result['tmp_%s_' %loc_peak + str(elec)], sub_mat))
+
+                                if to_accept:
+                                    elt_count += 1
+                                    if gpass >= 1:
+                                        to_add = numpy.array([peak + local_offset], dtype=numpy.uint32)
+                                        result['loc_times_' + str(elec)] = numpy.concatenate((result['loc_times_' + str(elec)], to_add))
+                                    if gpass == 1:
+                                        result['peaks_' + str(elec)] = numpy.concatenate((result['peaks_' + str(elec)], [int(negative_peak)]))
+                                    if safety_space:
+                                        all_times[indices, min_times[midx]:max_times[midx]] = True
+                                    else:
+                                        all_times[elec, min_times[midx]:max_times[midx]] = True
+
+                if gpass == 0:
+                    for i in range(comm.rank, N_e, comm.size):
+                        for p in search_peaks:
+                            if len(result['tmp_%s_' %p + str(i)]) < loop_max_elts_elec:
+                                result['nb_chunks_%s_' %p + str(i)] += 1
+
+        comm.Barrier()
+        sys.stderr.flush()
+
+        print_and_log(['Node %d has collected %d spikes and rejected %d spikes' % (comm.rank, elt_count, rejected)], 'debug', logger)
+        gdata       = all_gather_array(numpy.array([elt_count], dtype=numpy.float32), comm, 0)
+        gdata2      = gather_array(numpy.array([rejected], dtype=numpy.float32), comm, 0)
+        nb_elements = numpy.int64(numpy.sum(gdata))
+        nb_rejected = numpy.int64(numpy.sum(gdata2))
+        nb_total    = numpy.int64(nb_elts*comm.size)
+
+        if ((smart_search and (gpass == 0)) or (not smart_search and (gpass == 1))) and nb_elements == 0:
+            if comm.rank == 0:
+                print_and_log(['No waveforms found! Are the data properly loaded??'], 'error', logger)
+            sys.exit(0)
+
+        if nb_elements == 0:
+            gpass = nb_repeats
+
+        if comm.rank == 0:
+            if gpass != 1:
+                if isolation:
+                    print_and_log(["We found %d isolated spikes over %d requested" %(nb_elements, nb_total)], 'default', logger)
+                else:
+                    print_and_log(["We found %d spikes over %d requested" %(nb_elements, nb_total)], 'default', logger)
+                if nb_elements == 0:
+                    print_and_log(["No more isolated spikes in the recording, stop searching"], 'info', logger)
+            else:
+                if isolation:
+                    print_and_log(["We found %d isolated spikes over %d requested (%d rejected)" %(nb_elements, nb_total, nb_rejected)], 'default', logger)
+                else:
+                    print_and_log(["We found %d spikes over %d requested (%d rejected)" %(nb_elements, nb_total, nb_rejected)], 'default', logger)
+                if nb_elements < 0.2*nb_total:
+                    few_elts = True
+
+        #CLUSTERING: once we have been through enough chunks (we don't need all of them), we run a clustering for each electrode.
+        #print "Clustering the data..."
+        local_nb_clusters = 0
+        local_hits        = 0
+        local_mergings    = 0
+        cluster_results   = {}
+        for p in search_peaks:
+            cluster_results[p] = {}
+
+        if gpass > 1:
+            for ielec in range(N_e):
+                for p in search_peaks:
+                    result['tmp_%s_' %p + str(ielec)] = gather_array(result['tmp_%s_' %p + str(ielec)], comm, numpy.mod(ielec, comm.size), 1, compress=blosc_compress)
+        elif gpass == 1:
+            for ielec in range(comm.rank, N_e, comm.size):
+                result['times_' + str(ielec)] = numpy.copy(result['loc_times_' + str(ielec)])
+
+        if comm.rank == 0:
+            if gpass == 0:
+                print_and_log(["Estimating amplitudes distributions..."], 'default', logger)
+            elif gpass == 1:
+                print_and_log(["Computing density estimations..."], 'default', logger)
+            else:
+                print_and_log(["Refining density estimations..."], 'default', logger)
+            if not os.path.exists(plot_path):
+                os.makedirs(plot_path)
+
+        if gpass == 1:
+            dist_file = tempfile.NamedTemporaryFile()
+            tmp_file  = os.path.join(tmp_path_loc, os.path.basename(dist_file.name)) + '.hdf5'
+            dist_file.close()
+            result['dist_file'] = tmp_file
+            tmp_h5py  = h5py.File(result['dist_file'], 'w', libver='earliest')
+            print_and_log(["Node %d will use temp file %s" %(comm.rank, tmp_file)], 'debug', logger)
+        elif gpass > 1:
+            tmp_h5py  = h5py.File(result['dist_file'], 'r', libver='earliest')
+
+        to_explore = list(range(comm.rank, N_e, comm.size))
+        sys.stderr.flush()
+
+        if (comm.rank == 0) and gpass == nb_repeats:
+            print_and_log(["Running density-based clustering..."], 'default', logger)
+            to_explore = get_tqdm_progressbar(to_explore)
+
+        for ielec in to_explore:
+
+            for p in search_peaks:
+                cluster_results[p][ielec] = {}
+
+                if gpass == 0:
+                    if len(result['tmp_%s_' %p + str(ielec)]) > 1:
+
+                        # Need to estimate the number of spikes
+                        ratio = nb_chunks / float(result['nb_chunks_%s_' %p + str(ielec)])
+                        ampmin, ampmax = numpy.min(result['tmp_%s_' %p + str(ielec)]), numpy.max(result['tmp_%s_' %p + str(ielec)])
+                        if p == 'pos':
+                            if matched_filter:
+                                bound = matched_tresholds_pos[ielec]
+                            else:
+                                bound = thresholds[ielec]
+                            if bound < ampmax:
+                                bins =  [-numpy.inf] + numpy.linspace(bound, ampmax, nb_ss_bins - 1).tolist() + [numpy.inf]
+                            else:
+                                bins =  [-numpy.inf] + numpy.linspace(bound, bound*5, nb_ss_bins - 1).tolist() + [numpy.inf]
+
+                        elif p == 'neg':
+                            if matched_filter:
+                                bound = -matched_tresholds_neg[ielec]
+                            else:
+                                bound = -thresholds[ielec]
+                            if ampmin < bound:
+                                bins  = [-numpy.inf] + numpy.linspace(ampmin, bound, nb_ss_bins - 1).tolist() + [numpy.inf]
+                            else:
+                                bins  = [-numpy.inf] + numpy.linspace(5*bound, bound, nb_ss_bins - 1).tolist() + [numpy.inf]
+
+                        a, b  = numpy.histogram(result['tmp_%s_' %p + str(ielec)], bins)
+                        nb_spikes = numpy.sum(a)
+                        a = a/float(nb_spikes)
+
+                        z      = a[a > 0]
+                        c      = 1./numpy.min(z)
+                        d      = (1./(c*a))
+                        d      = numpy.minimum(1, d)
+                        d     /= numpy.sum(d)
+                        twist  = numpy.sum(a*d)
+                        factor = twist*c
+                        rejection_curve = numpy.minimum(0.95, factor*a)
+                        if ratio > 1:
+                            target_max = 1 - (1 - rejection_curve.max())/ratio
+                            rejection_curve *= target_max/(rejection_curve.max())
+
+                        result['hist_%s_'%p + str(ielec) ]   = rejection_curve
+                        result['bounds_%s_' %p + str(ielec)] = b
+
+                        # if make_plots not in ['None', '']:
+                        #     save     = [plot_path, '%s_%d.%s' %(p, ielec, make_plots)]
+                        #     plot.view_rejection(a, b[1:], result['hist_%s_'%p + str(ielec)], save=save)
+
+                    else:
+                        smart_searches[p][ielec] = 0
+
+                    if smart_searches[p][ielec] > 0:
+                        print_and_log(['Smart search is actived on channel %d' % ielec], 'debug', logger)
+
+                elif gpass == 1:
+                    if len(result['data_%s_' %p + str(ielec)]) >= 1:
+
+                        if result['pca_%s_' %p + str(ielec)] is None:
+                            pca                               = PCA(sub_output_dim)
+                            pca.fit(result['data_%s_' %p + str(ielec)])
+                            result['pca_%s_' %p + str(ielec)] = pca.components_.T.astype(numpy.float32)
+                            print_and_log(["The percentage of variance explained by local PCA on electrode %d is %s" 
+                                %(ielec, numpy.sum(pca.explained_variance_ratio_))], 'debug', logger)
+                            if result['pca_%s_' %p + str(ielec)].shape[1] < sub_output_dim:
+                                zeros = numpy.zeros((result['pca_%s_' %p + str(ielec)].shape[0], sub_output_dim - result['pca_%s_' %p + str(ielec)].shape[1]))
+                                result['pca_%s_' %p + str(ielec)] = numpy.hstack((result['pca_%s_' %p + str(ielec)], zeros))
+
+                        result['sub_%s_' %p + str(ielec)] = numpy.dot(result['data_%s_' %p + str(ielec)], result['pca_%s_' %p + str(ielec)])
+
+                        rho, dist, sdist = algo.compute_rho(result['sub_%s_' %p + str(ielec)], mratio=m_ratio)
+                        result['rho_%s_' %p  + str(ielec)]  = rho
+                        result['sdist_%s_' %p + str(ielec)] = sdist
+                        if hdf5_compress:
+                            tmp_h5py.create_dataset('dist_%s_' %p + str(ielec), data=dist.distances, chunks=True, compression='gzip')
+                        else:
+                            tmp_h5py.create_dataset('dist_%s_' %p + str(ielec), data=dist.distances, chunks=True)
+                        del dist, rho
+                    else:
+                        if result['pca_%s_' %p + str(ielec)] is None:
+                            n_neighb                    = len(edges[nodes[ielec]])
+                            dimension                   = basis['proj_%s' %p].shape[1] * n_neighb
+                            result['pca_%s_' %p + str(ielec)] = numpy.zeros((dimension, sub_output_dim), dtype=numpy.float32)
+                            result['pca_%s_' %p + str(ielec)][numpy.arange(sub_output_dim), numpy.arange(sub_output_dim)] = 1
+                        result['rho_%s_' %p  + str(ielec)] = numpy.zeros((0), dtype=numpy.float32)
+                        result['sub_%s_' %p + str(ielec)]  = numpy.zeros((0, sub_output_dim), dtype=numpy.float32)
+                        result['sdist_%s_' %p + str(ielec)] = numpy.zeros((0), dtype=numpy.float32)
+                else:
+                    if len(result['tmp_%s_' %p + str(ielec)]) > 1:
+                        data      = numpy.dot(result['tmp_%s_' %p + str(ielec)], result['pca_%s_' %p + str(ielec)])
+
+                        rho, sdist = algo.compute_rho(result['sub_%s_' %p + str(ielec)], update=(data, result['sdist_%s_' %p + str(ielec)]), mratio=m_ratio)
+                        result['rho_%s_' %p  + str(ielec)]  = rho
+                        result['sdist_%s_' %p + str(ielec)] = sdist
+                        del rho
+
+                if gpass == nb_repeats:
+
+                    result.pop('tmp_%s_' %p + str(ielec))
+                    n_data  = len(result['data_%s_' %p + str(ielec)])
+                    n_min   = numpy.maximum(n_abs_min, int(nclus_min*n_data))
+
+                    if p == 'pos':
+                        flag = 'positive'
+                    elif p == 'neg':
+                        flag = 'negative'
+
+                    if (n_data > 1):
+                        dist     = tmp_h5py.get('dist_%s_' %p + str(ielec))[:]
+                        result['rho_%s_' %p + str(ielec)]  = -result['rho_%s_' %p + str(ielec)] + result['rho_%s_' %p + str(ielec)].max()
+
+                        cluster_results[p][ielec]['groups'], r, d, c = algo.clustering_by_density(result['rho_%s_' %p + str(ielec)], dist,
+                                                                                      n_min=n_min, alpha=sensitivity)                        
+
+                        
+                        # Now we perform a merging step, for clusters that look too similar
+                        data = result['sub_%s_' %p + str(ielec)]
+                        cluster_results[p][ielec]['groups'], merged = algo.merging(cluster_results[p][ielec]['groups'],
+                                                                            sim_same_elec,
+                                                                            data)
+
+                        idx_clusters, counts = numpy.unique(cluster_results[p][ielec]['groups'], return_counts=True)
+                        for label, cluster_size in zip(idx_clusters, counts):
+                            if cluster_size < n_min:
+                                tmp = cluster_results[p][ielec]['groups'] == label
+                                cluster_results[p][ielec]['groups'][tmp] = -1
+
+                        if make_plots not in ['None', '']:
+                            save     = [plot_path, '%s_%d.%s' %(p, ielec, make_plots)]
+                            injected = None
+                            if test_clusters:
+                                injected = numpy.zeros(len(result['data_%s_' %p + str(ielec)]), dtype=numpy.bool)
+                                key = 'spikes_' + str(ielec)
+                                thresh = 2
+                                if key in injected_spikes:
+                                    for icount, spike in enumerate(result['loc_times_' + str(ielec)]):
+                                        idx = numpy.where(numpy.abs(spike - injected_spikes['spikes_' + str(ielec)]) < thresh)[0]
+                                        if len(idx) > 0:
+                                            if icount < (len(injected) - 1):
+                                                injected[icount] = True
+
+                            data = numpy.dot(result['data_%s_' %p + str(ielec)], result['pca_%s_' %p + str(ielec)])
+                            plot.view_clusters(data, r, d, c,
+                                                   cluster_results[p][ielec]['groups'], injected=injected,
+                                                   save=save, alpha=sensitivity)
+
+                        keys = ['loc_times_' + str(ielec), 'all_times_' + str(ielec), 'rho_%s_' %p + str(ielec)]
+                        for key in keys:
+                            if key in result:
+                                result.pop(key)
+                        mask                                = numpy.where(cluster_results[p][ielec]['groups'] > -1)[0]
+                        cluster_results[p][ielec]['n_clus'] = len(numpy.unique(cluster_results[p][ielec]['groups'][mask]))
+                        n_clusters                          = []
+                        result['clusters_%s_' %p + str(ielec)] = cluster_results[p][ielec]['groups']
+                        for i in numpy.unique(cluster_results[p][ielec]['groups'][mask]):
+                            n_clusters += [numpy.sum(cluster_results[p][ielec]['groups'][mask] == i)]
+
+                        line = ["Node %d: %d-%d %s templates on channel %d from %d spikes: %s" %(comm.rank, merged[0], merged[1], flag, ielec, n_data, str(n_clusters))]
+                        print_and_log(line, 'debug', logger)
+                        local_mergings += merged[1]
+                        del dist, r, d, c
+                    else:
+                        cluster_results[p][ielec]['groups'] = numpy.zeros(0, dtype=numpy.int32)
+                        cluster_results[p][ielec]['n_clus'] = 0
+                        result['clusters_%s_' %p + str(ielec)] = numpy.zeros(0, dtype=numpy.int32)
+                        line = ["Node %d: not enough %s spikes on channel %d" %(comm.rank, flag, ielec)]
+                        print_and_log(line, 'debug', logger)
+
+                    local_nb_clusters += cluster_results[p][ielec]['n_clus']
+
+        if gpass >= 1:
+            tmp_h5py.close()
+        gpass += 1
+
+    sys.stderr.flush()
+    try:
+        os.remove(result['dist_file'])
+    except Exception:
+        pass
+
+    comm.Barrier()
+
+    gdata      = gather_array(numpy.array([local_hits], dtype=numpy.float32), comm, 0)
+    gdata2     = gather_array(numpy.array([local_mergings], dtype=numpy.float32), comm, 0)
+    gdata3     = gather_array(numpy.array([local_nb_clusters], dtype=numpy.float32), comm, 0)
+
+    mean_channels = 0
+
+    if comm.rank == 0:
+        total_hits        = int(numpy.sum(gdata))
+        total_mergings    = int(numpy.sum(gdata2))
+        total_nb_clusters = int(numpy.sum(gdata3))
+        lines = ["Number of clusters found : %d" %total_nb_clusters,
+                 "Number of local merges   : %d" %total_mergings]
+        if few_elts:
+            lines += ["Not enough spikes gathered: -put safety_space=False?"]
+            if numpy.any(sdata > 0):
+                lines += ["                            -remove smart_search?"]
+            if isolation:
+                lines += ["                            -remove isolation mode?"]
+
+        print_and_log(lines, 'info', logger)
+        print_and_log(["Estimating the templates with the %s procedure ..." %extraction], 'default', logger)
+
+    if extraction in ['median-raw', 'median-pca', 'mean-raw', 'mean-pca']:
+
+        total_nb_clusters = int(comm.bcast(numpy.array([int(numpy.sum(gdata3))], dtype=numpy.int32), root=0)[0])
+        offsets    = numpy.zeros(comm.size, dtype=numpy.int32)
+        for i in range(comm.size-1):
+            offsets[i+1] = comm.bcast(numpy.array([local_nb_clusters], dtype=numpy.int32), root=i)
+        node_pad   = numpy.sum(offsets[:comm.rank+1])
+
+        if parallel_hdf5:
+            hfile      = h5py.File(file_out_suff + '.templates.hdf5', 'w', driver='mpio', comm=comm, libver='earliest')
+            norms      = hfile.create_dataset('norms', shape=(2*total_nb_clusters, ), dtype=numpy.float32, chunks=True)
+            electrodes = hfile.create_dataset('electrodes', shape=(total_nb_clusters, ), dtype=numpy.int32, chunks=True)
+            amps_lims  = hfile.create_dataset('limits', shape=(total_nb_clusters, 2), dtype=numpy.float32, chunks=True)
+            g_count    = node_pad
+            g_offset   = total_nb_clusters
+        else:
+            hfile      = h5py.File(file_out_suff + '.templates-%d.hdf5' %comm.rank, 'w', libver='earliest')
+            electrodes = hfile.create_dataset('electrodes', shape=(local_nb_clusters, ), dtype=numpy.int32, chunks=True)
+            norms      = hfile.create_dataset('norms', shape=(2*local_nb_clusters, ), dtype=numpy.float32, chunks=True)
+            amps_lims  = hfile.create_dataset('limits', shape=(local_nb_clusters, 2), dtype=numpy.float32, chunks=True)
+            g_count    = 0
+            g_offset   = local_nb_clusters
+
+        temp_x     = numpy.zeros(0, dtype=numpy.uint32)
+        temp_y     = numpy.zeros(0, dtype=numpy.uint32)
+        temp_data  = numpy.zeros(0, dtype=numpy.float32)
+        shifted_templates = numpy.zeros(0, dtype=numpy.int32)
+
+        comm.Barrier()
+        cfile           = h5py.File(file_out_suff + '.clusters-%d.hdf5' %comm.rank, 'w', libver='earliest')
+        count_templates = node_pad
+
+        data_file.close()
+
+        to_explore = range(comm.rank, N_e, comm.size)
+
+        if (comm.rank == 0):
+            to_explore = get_tqdm_progressbar(to_explore)
+
+        for ielec in to_explore:
+
+            n_neighb = len(edges[nodes[ielec]])
+            indices  = inv_nodes[edges[nodes[ielec]]]
+
+            for p in search_peaks:
+
+                #print "Dealing with cluster", ielec
+                n_data   = len(result['data_%s_' %p + str(ielec)])
+                data     = result['data_%s_' %p + str(ielec)].reshape(n_data, basis['proj_%s' %p].shape[1], n_neighb)
+                loc_pad  = count_templates
+                myamps   = []
+                mask     = numpy.where(cluster_results[p][ielec]['groups'] > -1)[0]
+
+                if p == 'pos':
+                    myslice2 = numpy.where(result['peaks_' + str(ielec)] == 0)[0]
+                elif p == 'neg':
+                    myslice2 = numpy.where(result['peaks_' + str(ielec)] == 1)[0]
+
+                loc_times = numpy.take(result['times_' + str(ielec)], myslice2)
+                loc_clusters = numpy.take(cluster_results[p][ielec]['groups'], mask)
+    
+                for group in numpy.unique(loc_clusters):
+                    electrodes[g_count] = ielec
+                    myslice = numpy.where(cluster_results[p][ielec]['groups'] == group)[0]
+                    
+                    if extraction == 'median-pca':
+                        sub_data        = numpy.take(data, myslice, axis=0)
+                        first_component = numpy.median(sub_data, axis=0)
+                        tmp_templates   = numpy.dot(first_component.T, basis['rec_%s' %p])
+                    elif extraction == 'mean-pca':
+                        sub_data        = numpy.take(data, myslice, axis=0)
+                        first_component = numpy.mean(sub_data, axis=0)
+                        tmp_templates   = numpy.dot(first_component.T, basis['rec_%s' %p])
+                    elif extraction == 'median-raw':                
+                        labels_i        = numpy.random.permutation(myslice)[:min(len(myslice), 250)]
+                        times_i         = numpy.take(loc_times, labels_i)
+                        sub_data        = io.get_stas(params, times_i, labels_i, ielec, neighs=indices, nodes=nodes, pos=p)
+                        first_component = numpy.median(sub_data, 0)
+                        tmp_templates   = first_component
+                    elif extraction == 'mean-raw':                
+                        labels_i        = numpy.random.permutation(myslice)[:min(len(myslice), 250)]
+                        times_i         = numpy.take(loc_times, labels_i)
+                        sub_data        = io.get_stas(params, times_i, labels_i, ielec, neighs=indices, nodes=nodes, pos=p) #io.get_stas(sub_data, times_i, labels_i, ielec, neighs=indices, nodes=nodes, pos=p)
+                        first_component = numpy.mean(sub_data, 0)
+                        tmp_templates   = first_component
+
+                    if p == 'neg':
+                        tmpidx = divmod(tmp_templates.argmin(), tmp_templates.shape[1])
+                    elif p == 'pos':
+                        tmpidx = divmod(tmp_templates.argmax(), tmp_templates.shape[1])
+
+                    shift     = template_shift - tmpidx[1]
+
+                    if np.abs(shift) > template_shift / 4:
+
+                        shifted_templates = numpy.concatenate((shifted_templates, numpy.array([count_templates], dtype='int32')))
+                        myamps           += [[0, 10]]
+
+                    else:
+
+                        templates = numpy.zeros((N_e, N_t), dtype=numpy.float32)
+                        if shift > 0:
+                            templates[indices, shift:] = tmp_templates[:, :-shift]
+                        elif shift < 0:
+                            templates[indices, :shift] = tmp_templates[:, -shift:]
+                        else:
+                            templates[indices, :] = tmp_templates
+
+                        mean_channels += len(indices)
+                        if comp_templates:
+                            to_delete  = []
+                            for i in indices:
+                                if (numpy.abs(templates[i, :]).max() < 0.5*(thresholds[i]/spike_thresh)):
+                                    templates[i, :] = 0
+                                    to_delete += [i]
+                            mean_channels -= len(to_delete)
+
+                        templates  = templates.ravel()
+                        dx         = templates.nonzero()[0].astype(numpy.uint32)
+
+                        temp_x     = numpy.concatenate((temp_x, dx))
+                        temp_y     = numpy.concatenate((temp_y, count_templates*numpy.ones(len(dx), dtype=numpy.uint32)))
+                        temp_data  = numpy.concatenate((temp_data, templates[dx]))
+
+                        norms[g_count] = numpy.sqrt(numpy.sum(templates.ravel()**2)/(N_e*N_t))
+
+                        x, y, z          = sub_data.shape
+                        sub_data_flat    = sub_data.reshape(x, y*z)
+                        first_flat       = first_component.reshape(y*z, 1)
+                        amplitudes       = numpy.dot(sub_data_flat, first_flat)
+                        amplitudes      /= numpy.sum(first_flat**2)
+
+                        variation        = numpy.median(numpy.abs(amplitudes - numpy.median(amplitudes)))
+
+                        physical_limit   = noise_thr*(-thresholds[indices[tmpidx[0]]])/tmp_templates.min()
+                        amp_min          = min(0.8, max(physical_limit, numpy.median(amplitudes) - dispersion[0]*variation))
+                        amp_max          = max(1.2, numpy.median(amplitudes) + dispersion[1]*variation)
+                        amps_lims[g_count] = [amp_min, amp_max]
+                        myamps            += [[amp_min, amp_max]]
+
+                        for i in range(x):
+                            sub_data_flat[i, :] -= amplitudes[i]*first_flat[:, 0]
+
+                        if len(sub_data_flat) > 1:
+                            pca              = PCA(1)
+                            pca.fit(sub_data_flat)
+                            second_component = pca.components_.T.astype(numpy.float32).reshape(y, z)
+                        else:
+                            second_component = sub_data_flat.reshape(y, z)/numpy.sum(sub_data_flat**2)
+
+                        if extraction in ['median-pca', 'mean-pca']:
+                            tmp_templates = numpy.dot(second_component.T, basis['rec_%s' %p])
+                        elif extraction in ['median-raw', 'mean-raw']:
+                            tmp_templates = second_component
+
+                        offset        = total_nb_clusters + count_templates
+                        sub_templates = numpy.zeros((N_e, N_t), dtype=numpy.float32)
+                        if shift > 0:
+                            sub_templates[indices, shift:] = tmp_templates[:, :-shift]
+                        elif shift < 0:
+                            sub_templates[indices, :shift] = tmp_templates[:, -shift:]
+                        else:
+                            sub_templates[indices, :] = tmp_templates
+
+                        if comp_templates:
+                            for i in to_delete:
+                                sub_templates[i, :] = 0
+
+                        sub_templates = sub_templates.ravel()
+                        dx            = sub_templates.nonzero()[0].astype(numpy.uint32)
+
+                        temp_x     = numpy.concatenate((temp_x, dx))
+                        temp_y     = numpy.concatenate((temp_y, offset*numpy.ones(len(dx), dtype=numpy.uint32)))
+                        temp_data  = numpy.concatenate((temp_data, sub_templates[dx]))
+
+                        norms[g_count + g_offset] = numpy.sqrt(numpy.sum(sub_templates.ravel()**2)/(N_e*N_t))
+
+                    count_templates += 1
+                    g_count         += 1
+
+                if make_plots not in ['None', '']:
+                    if n_data > 1:
+                        save     = [plot_path, '%s_%d.%s' %(p, ielec, make_plots)]
+                        idx      = numpy.where(indices == ielec)[0][0]
+                        sub_data = numpy.take(data, idx, axis=2)
+                        nb_temp  = cluster_results[p][ielec]['n_clus']
+                        vidx     = numpy.where((temp_y >= loc_pad) & (temp_y < loc_pad+nb_temp))[0]
+                        sub_tmp  = scipy.sparse.csr_matrix((temp_data[vidx], (temp_x[vidx], temp_y[vidx]-loc_pad)), shape=(N_e*N_t, nb_temp))
+                        sub_tmp  = sub_tmp.toarray().reshape(N_e, N_t, nb_temp)
+                        sub_tmp  = sub_tmp[ielec, :, :]
+                        plot.view_waveforms_clusters(numpy.dot(sub_data, basis['rec_%s' %p]), cluster_results[p][ielec]['groups'],
+                            thresholds[ielec], sub_tmp,
+                            numpy.array(myamps), save=save)
+
+                data = numpy.dot(result['data_%s_' %p + str(ielec)], result['pca_%s_' %p + str(ielec)])
+                result['data_' + str(ielec)] = numpy.concatenate((result['data_' + str(ielec)], data))
+                if len(result['clusters_' + str(ielec)]) > 0:
+                    max_offset = numpy.int32(numpy.max(result['clusters_' + str(ielec)]) + 1)
+                else:
+                    max_offset = numpy.int32(0)
+
+                mask = result['clusters_%s_' %p + str(ielec)] > -1
+                result['clusters_%s_' %p + str(ielec)][mask] += max_offset
+                result['clusters_' + str(ielec)] = numpy.concatenate((result['clusters_' + str(ielec)], result['clusters_%s_' %p + str(ielec)]))
+
+            del data
+
+            all_indices = numpy.zeros(0, dtype=numpy.uint32)
+            for p in search_peaks:
+                if p == 'pos':
+                    target = 0
+                elif p == 'neg':
+                    target = 1
+                all_indices = numpy.concatenate((all_indices, numpy.where(result['peaks_' + str(ielec)] == target)[0]))
+
+            result['times_' + str(ielec)] = result['times_' + str(ielec)][all_indices]
+            result['peaks_' + str(ielec)] = result['peaks_' + str(ielec)][all_indices]
+
+            io.write_datasets(cfile, to_write, result, ielec, compression=hdf5_compress)
+
+
+        #At the end we should have a templates variable to store.
+        cfile.close()
+        del result, amps_lims
+        sys.stderr.flush()
+
+        comm.Barrier()
+
+        if local_nb_clusters > 0:
+            mean_channels /= local_nb_clusters
+
+        gdata4 = gather_array(numpy.array([mean_channels], dtype=numpy.float32), comm)
+
+        shifted_templates = all_gather_array(shifted_templates, comm, 0, dtype='int32')
+
+        if comm.rank == 0:
+            idx           = numpy.where(gdata4 != 0)[0]
+            mean_channels = numpy.mean(gdata4[idx])
+            if mean_channels < 3 and params.getfloat('clustering', 'cc_merge') != 1:
+                print_and_log(["Templates on few channels only, cc_merge should be 1"], 'info', logger)
+
+        #We need to gather the sparse arrays
+        temp_x    = gather_array(temp_x, comm, dtype='uint32', compress=blosc_compress)
+        temp_y    = gather_array(temp_y, comm, dtype='uint32', compress=blosc_compress)
+        temp_data = gather_array(temp_data, comm, compress=blosc_compress)
+
+        if parallel_hdf5:
+            if comm.rank == 0:
+                rs         = [h5py.File(file_out_suff + '.clusters-%d.hdf5' %i, 'r', libver='earliest') for i in range(comm.size)]
+                cfile      = h5py.File(file_out_suff + '.clusters.hdf5', 'w', libver='earliest')
+                io.write_datasets(cfile, ['electrodes'], {'electrodes' : electrodes[:]})
+                for i in range(comm.size):
+                    for j in range(i, N_e, comm.size):
+                        io.write_datasets(cfile, to_write, rs[i], j, compression=hdf5_compress)
+                    rs[i].close()
+                    os.remove(file_out_suff + '.clusters-%d.hdf5' %i)
+                cfile.close()
+            hfile.close()
+        else:
+            hfile.close()
+            comm.Barrier()
+            if comm.rank == 0:
+                ts         = [h5py.File(file_out_suff + '.templates-%d.hdf5' %i, 'r', libver='earliest') for i in range(comm.size)]
+                rs         = [h5py.File(file_out_suff + '.clusters-%d.hdf5' %i, 'r', libver='earliest') for i in range(comm.size)]
+                result     = {}
+                hfile      = h5py.File(file_out_suff + '.templates.hdf5', 'w', libver='earliest')
+                cfile      = h5py.File(file_out_suff + '.clusters.hdf5', 'w', libver='earliest')
+                electrodes = hfile.create_dataset('electrodes', shape=(total_nb_clusters, ), dtype=numpy.int32, chunks=True)
+                norms      = hfile.create_dataset('norms', shape=(2*total_nb_clusters, ), dtype=numpy.float32, chunks=True)
+                amplitudes = hfile.create_dataset('limits', shape=(total_nb_clusters, 2), dtype=numpy.float32, chunks=True)
+                count      = 0
+                for i in range(comm.size):
+                    loc_norms   = ts[i].get('norms')
+                    middle      = len(loc_norms)//2
+                    norms[count:count+middle]                                     = loc_norms[:middle]
+                    norms[total_nb_clusters+count:total_nb_clusters+count+middle] = loc_norms[middle:]
+                    electrodes[count:count+middle] = ts[i].get('electrodes')
+                    amplitudes[count:count+middle] = ts[i].get('limits')
+                    count      += middle
+                    for j in range(i, N_e, comm.size):
+                        io.write_datasets(cfile, to_write, rs[i], j, compression=hdf5_compress)
+                    ts[i].close()
+                    rs[i].close()
+                    os.remove(file_out_suff + '.templates-%d.hdf5' %i)
+                    os.remove(file_out_suff + '.clusters-%d.hdf5' %i)
+                hfile.flush() # we need to flush otherwise electrodes[:] refers to zeros and not the real values
+                io.write_datasets(cfile, ['electrodes'], {'electrodes' : electrodes[:]})
+                hfile.close()
+                cfile.close()
+
+        if comm.rank == 0:
+            hfile      = h5py.File(file_out_suff + '.templates.hdf5', 'r+', libver='earliest')
+            if hdf5_compress:
+                hfile.create_dataset('temp_x', data=temp_x, compression='gzip')
+                hfile.create_dataset('temp_y', data=temp_y, compression='gzip')
+                hfile.create_dataset('temp_data', data=temp_data, compression='gzip')
+            else:
+                hfile.create_dataset('temp_x', data=temp_x)
+                hfile.create_dataset('temp_y', data=temp_y)
+                hfile.create_dataset('temp_data', data=temp_data)
+            hfile.create_dataset('temp_shape', data=numpy.array([N_e, N_t, 2*total_nb_clusters], dtype=numpy.int32))
+            hfile.close()
+        
+    del temp_x, temp_y, temp_data
+
+    import gc
+    gc.collect()
+
+    comm.Barrier()
+
+    if len(shifted_templates) > 0:
+
+        if comm.rank == 0:
+            print_and_log(["Removing %d strongly shifted templates..." %len(shifted_templates)], 'default', logger)
+
+        if comm.rank == 0:
+            result = io.load_data(params, 'clusters')
+        else:
+            result = []
+
+        algo.slice_templates(params, to_remove=shifted_templates)
+        algo.slice_clusters(params, to_remove=shifted_templates, result=result)
+
+        del result
+
+    comm.Barrier()
+
+    total_nb_clusters = int(io.load_data(params, 'nb_templates') // 2)
+
+    if total_nb_clusters > 0:
+
+        if comm.rank == 0:
+            print_and_log(["Merging similar templates..."], 'default', logger)
+
+        merged1 = algo.merging_cc(params, nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)
+
+        comm.Barrier()
+
+        if remove_mixture:
+            if comm.rank == 0:
+                print_and_log(["Removing mixtures of templates..."], 'default', logger)
+            merged2 = algo.delete_mixtures(params, nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)
+        else:
+            merged2 = [0, 0]
+
+    else:
+        merged1 = [0, 0]
+        merged2 = [0, 0]
+
+    if comm.rank == 0:
+
+        print_and_log(["Number of global merges    : %d" %merged1[1],
+                       "Number of mixtures removed : %d" %merged2[1]], 'info', logger)
+
+    comm.Barrier()
+
+    io.get_overlaps(params, erase=True, nb_cpu=nb_cpu, nb_gpu=nb_gpu, use_gpu=use_gpu)
