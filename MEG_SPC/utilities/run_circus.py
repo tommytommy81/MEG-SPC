@@ -52,8 +52,8 @@ class Circus:
         ### Copy files
         copyfile(paths['circus_updates']/'config.params', paths['SPC_params'])
         copyfile(paths['circus_updates']/'meg_306.prb', paths['SPC']/'meg_306.prb')
-        grad_idx = paths['circus_updates'].parent/'grad_sensors_idx.npy'
-        mag_idx  = paths['circus_updates'].parent/'mag_sensors_idx.npy'
+        grad_idx = paths['circus_updates']/'grad_sensors_idx.npy'
+        mag_idx  = paths['circus_updates']/'mag_sensors_idx.npy'
         copyfile(grad_idx, paths['SPC']/'grad_idx.npy')
         copyfile(mag_idx, paths['SPC']/'mag_idx.npy')
         
