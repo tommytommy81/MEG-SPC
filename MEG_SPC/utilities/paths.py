@@ -7,27 +7,49 @@ Created on Wed Feb  5 14:47:50 2020
 """
 from pathlib import Path
 
-def set_paths(fif, sens='grad'):
-    from pkg_resources import resource_filename
-    code_source = Path.cwd()
-    case = case
-    case_meg = Path(root) / case
-        
-    SPC_root = case_meg / 'CIRCUS'
-    ### Package paths
-    self.circus_clustering = Path(resource_filename('circus','clustering.py'))
-    self.circus_pkg = self.circus_clustering.parent
-    
-    self.circus_updates =  self.code_source / 'circus_utilities' / 'spyking_circus_updates'
-    
-    self.fif_file = self.case_meg / 'art_corr' / fif
-    self.SPC = self.SPC_root / self.fif_file.stem #folder
-    self.npy_file = self.SPC / '{}_0'.format(self.fif_file.stem)
-    self.npy_file = self.npy_file.with_suffix('.npy')
-    self.SPC_output = self.SPC / '{}_CIRCUS_{}'.format(self.case, sens)       
+def set_paths(case, run, sens='grad'):
+    '''
+    Prepare folders for Spyking Circus
 
-    self.SPC_params = self.npy_file.parent / self.npy_file.stem #'%s%s.params'%(self.folder,self.filename[:-4])
-    self.SPC_params = self.SPC_params.with_suffix('.params') 
-    self.SPC_results = self.SPC_root / 'Results'
-    if not self.SPC_results.is_dir():
-        self.SPC_results.mkdir(exist_ok=True)    
+    Parameters
+    ----------
+    case : str
+        Full path to the case
+    run : str
+        Recording designation which will be analyzed
+    sens : str, optional
+        'grad' or 'mag'. The default is 'grad'.
+
+    '''
+    from pkg_resources import resource_filename
+    ### Main
+    paths = {}
+    paths['code_source'] = Path.cwd()
+    paths['case_meg'] = Path(case)
+    paths['case'] = paths['case_meg'].name
+    paths['SPC_root'] = paths['case_meg'] / 'CIRCUS'
+    if not paths['SPC_root'].is_dir():
+        paths['SPC_root'].mkdir(exist_ok=True)
+        
+    ### Package paths
+    paths['circus_pkg'] = Path(resource_filename('circus','clustering.py')).parent
+    paths['circus_updates'] =  paths['code_source'] / 'spyking_circus_updates'
+    
+    ### Files
+    paths['art_cor'] = paths['case_meg']/'MEG_data'/'tsss_mc_artefact_correction'
+    if sorted(paths['art_cor'].glob('*{}*'.format(run))) != []:
+        paths['fif_file'] = sorted(paths['art_cor'].glob('*{}*'.format(run)))[0]
+        paths['SPC'] = paths['SPC_root'] / paths['fif_file'].stem #folder
+        paths['npy_file'] = paths['fif_file'].with_suffix('.npy')
+        paths['SPC_output'] = paths['SPC']/'{}_CIRCUS_{}'.format(paths['case'], sens)       
+        paths['SPC_params'] = paths['npy_file'].with_suffix('.params') 
+        paths['SPC_results'] = paths['SPC_root'] / 'Results'
+        if not paths['SPC'].is_dir():
+             paths['SPC'].mkdir(exist_ok=True) 
+        if not paths['SPC_output'].is_dir():
+            paths['SPC_output'].mkdir(exist_ok=True)        
+        if not paths['SPC_results'].is_dir():
+            paths['SPC_results'].mkdir(exist_ok=True)  
+    else: print("Error. No fif file")
+    
+    return paths
