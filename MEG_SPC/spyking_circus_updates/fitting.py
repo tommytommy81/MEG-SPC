@@ -68,6 +68,8 @@ def main(params, nb_cpu, nb_gpu, use_gpu):
     #------------------------------------MEG-SPIKES--------------------------------------------------#
     templates_masked = algo.select_peaks_templates(templates,temp_window.shape[0],template_shift, n_max_peaks=10)
     #------------------------------------MEG-SPIKES--------------------------------------------------#
+    
+    if not amp_auto:
         amp_limits       = numpy.zeros((n_tm, 2))
         amp_limits[:, 0] = tmp_limits[0]
         amp_limits[:, 1] = tmp_limits[1]
