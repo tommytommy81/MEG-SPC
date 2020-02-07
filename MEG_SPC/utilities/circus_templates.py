@@ -18,7 +18,11 @@ class Templates:
         self.params       = params
         self.N_t          = self.params.getint('detection','N_t')
         self.output_dir   = paths['SPC_output']
+        
+        ### 
         self.read_templates()
+        self.save_template_for_aspire()
+        self.templates_array()
         
     def read_templates(self):
         '''
