@@ -15,16 +15,17 @@ class Circus:
 
         Parameters
         ----------
-        paths : utilities.paths.Paths_meg
+        paths : dictionary
             All necessary folders and files:
-                -- paths.case
-                -- paths.SPC_output
-                -- paths.SPC_params
-                -- paths.circus_updates
-                -- paths.circus_pkg
-                -- paths.SPC
-                -- paths.SPC_output
-                -- paths.circus_updates
+                -- paths['case']
+                -- paths['npy_file']
+                -- paths['SPC_output']
+                -- paths['SPC_params']
+                -- paths['circus_updates']
+                -- paths['circus_pkg']
+                -- paths['SPC']
+                -- paths['SPC_output']
+                -- paths['circus_updates']
         main_params : dictionary
             Some parameters that are useful for setting:
                 -- 'N_t'
@@ -38,28 +39,23 @@ class Circus:
         from shutil import copyfile
         ### Set paths and parameters
         self.main_params = main_params        
-        self.case        = paths.case
-        self.npy_file    = paths.npy_file
+        self.case        = paths['case']
+        self.npy_file    = paths['npy_file']
         self.sensors     = sensors
-        self.output      = paths.SPC_output
-        self.path_params = paths.SPC_params
+        self.output      = paths['SPC_output']
+        self.path_params = paths['SPC_params']
         
         ### Update circus package
-        self._update_circus_package_for_meg(paths.circus_updates, paths.circus_pkg)
-        
-        ### Create folders
-        if not paths.SPC.is_dir():
-            paths.SPC.mkdir(exist_ok=True)
-        if not paths.SPC_output.is_dir():
-            paths.SPC_output.mkdir(exist_ok=True)
-        
+        self._update_circus_package_for_meg(paths['circus_updates'], 
+                                            paths['circus_pkg'])
+                
         ### Copy files
-        copyfile(paths.circus_updates / 'config.params', paths.SPC_params)
-        copyfile(paths.circus_updates / 'meg_306.prb', paths.SPC / 'meg_306.prb')
-        grad_idx = paths.circus_updates.parent / 'grad_sensors_idx.npy'
-        mag_idx  = paths.circus_updates.parent / 'mag_sensors_idx.npy'
-        copyfile(grad_idx, paths.SPC / 'grad_idx.npy')
-        copyfile(mag_idx, paths.SPC / 'mag_idx.npy')
+        copyfile(paths['circus_updates']/'config.params', paths['SPC_params'])
+        copyfile(paths['circus_updates']/'meg_306.prb', paths['SPC']/'meg_306.prb')
+        grad_idx = paths['circus_updates'].parent/'grad_sensors_idx.npy'
+        mag_idx  = paths['circus_updates'].parent/'mag_sensors_idx.npy'
+        copyfile(grad_idx, paths['SPC']/'grad_idx.npy')
+        copyfile(mag_idx, paths['SPC']/'mag_idx.npy')
         
         ### Load sensors indexes
         self.main_params['grad_idx']    = str(np.load(grad_idx).tolist())

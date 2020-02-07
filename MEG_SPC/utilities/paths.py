@@ -53,3 +53,22 @@ def set_paths(case, run, sens='grad'):
     else: print("Error. No fif file")
     
     return paths
+
+def fif_to_npy(fif, npy):
+    '''
+    Convert and save fif-file to numpy file
+
+    Parameters
+    ----------
+    fif : pathlib.PosixPath
+        The path to fif-file
+    npy : pathlib.PosixPath
+        The path to numpy file
+
+    '''
+    import mne
+    import numpy as np
+    data = mne.io.read_raw_fif(str(fif), preload=True, verbose=False)
+    data.pick_types(meg=True, eeg=False, stim=False, eog=False, ecg=False)
+    np.save(npy, (data.get_data(reject_by_annotation='omit')).astype(float))
+    del data
