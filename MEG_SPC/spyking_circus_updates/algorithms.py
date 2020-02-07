@@ -795,7 +795,7 @@ def FPCMDetectorPVU(Bp,C,x,ind,H,rules,T1L=20,T1R=20,T2L=27,T2R=27, WavePwr=2):
             synth_dict[ind[i]] = synth
     return pvu, synth_dict
 #------------------------------------MEG-SPIKES--------------------------------------------------#
-def detect_peaks(x0,mph=None,mpd=50,threshold=0,edge='rising',kpsh=False,valley=False,show=True,ax=None, chunk_number=1, manual_spikes=False, fitting=False, temp_2_shift=400):
+def detect_peaks(x0,mph=None,mpd=50,threshold=0,edge='rising',kpsh=False,valley=False,show=False,ax=None, chunk_number=1, manual_spikes=False, fitting=False, temp_2_shift=400):
     if fitting:
         mad, T1, T2, cross_corr,rules = 4, 20, 50, 0.9, 1
         mpd = 50
