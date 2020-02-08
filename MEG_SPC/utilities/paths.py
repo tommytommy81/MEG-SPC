@@ -7,14 +7,16 @@ Created on Wed Feb  5 14:47:50 2020
 """
 from pathlib import Path
 
-def set_paths(case, run, sens='grad'):
+def set_paths(root, case, run, sens='grad'):
     '''
     Prepare folders for Spyking Circus
 
     Parameters
     ----------
-    case : str
+    root : str
         Full path to the case
+    case : str
+        Patient ID
     run : str
         Recording designation which will be analyzed
     sens : str, optional
@@ -25,8 +27,8 @@ def set_paths(case, run, sens='grad'):
     ### Main
     paths = {}
     paths['code_source'] = Path.cwd()
-    paths['case_meg']    = Path(case)
-    paths['case']        = paths['case_meg'].name
+    paths['case_meg']    = Path(root)
+    paths['case']        = case
     paths['SPC_root']    = paths['case_meg'] / 'CIRCUS'
     if not paths['SPC_root'].is_dir():
         paths['SPC_root'].mkdir(exist_ok=True)
